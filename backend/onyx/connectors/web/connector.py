@@ -261,6 +261,12 @@ def _same_site(base_url: str, candidate_url: str) -> bool:
     return candidate_path.startswith(boundary)
 
 
+def _is_excluded_url(url: str, exclude_patterns: list[str]) -> bool:
+    """Returns True if the URL contains any of the given substrings.
+    Simple substring match, e.g. '/login' would exclude '/login', '/user/login', etc."""
+    return any(pattern in url for pattern in exclude_patterns)
+
+
 def get_internal_links(
     base_url: str, url: str, soup: BeautifulSoup, should_ignore_pound: bool = True
 ) -> set[str]:
@@ -397,6 +403,7 @@ class WebConnector(LoadConnector, SlimConnector):
         batch_size: int = INDEX_BATCH_SIZE,
         scroll_before_scraping: bool = False,
         url_rewrites: list[UrlRewriteRule] | None = None,
+        exclude_url_patterns: list[str] | None = None,
         **kwargs: Any,  # noqa: ARG002
     ) -> None:
         self.mintlify_cleanup = mintlify_cleanup
@@ -404,6 +411,7 @@ class WebConnector(LoadConnector, SlimConnector):
         self.recursive = False
         self.scroll_before_scraping = scroll_before_scraping
         self.web_connector_type = web_connector_type
+        self.exclude_url_patterns = exclude_url_patterns or []
         # Config arrives as raw JSON (list[dict]); validate into rule models.
         rules = _URL_REWRITES_ADAPTER.validate_python(url_rewrites or [])
         self.url_rewrites = _parse_url_rewrites(rules)
@@ -608,8 +616,12 @@ class WebConnector(LoadConnector, SlimConnector):
                     session_ctx.base_url, initial_url, soup
                 )
                 for link in internal_links:
-                    if link not in session_ctx.visited_links:
-                        session_ctx.to_visit.append(link)
+                    if link in session_ctx.visited_links:
+                        continue
+                    if _is_excluded_url(link, self.exclude_url_patterns):
+                        logger.debug("Skipping excluded URL: %s", link)
+                        continue
+                    session_ctx.to_visit.append(link)
 
             if page_response and str(page_response.status)[0] in ("4", "5"):
                 session_ctx.last_error = f"Skipped indexing {initial_url} due to HTTP {page_response.status} response"
@@ -853,6 +865,9 @@ class WebConnector(LoadConnector, SlimConnector):
 
 
 if __name__ == "__main__":
-    connector = WebConnector("https://docs.onyx.app/")
+    connector = WebConnector(
+        "https://docs.onyx.app/",
+        exclude_url_patterns=["/admins"],
+    )
     document_batches = connector.load_from_state()
     print(next(document_batches))
